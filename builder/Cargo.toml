@@ -17,4 +17,5 @@ trybuild = "1.0"
 
 [dependencies]
 syn = "1"
+quote = "1"
 # TODO
