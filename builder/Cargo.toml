@@ -16,4 +16,5 @@ path = "tests/progress.rs"
 trybuild = "1.0"
 
 [dependencies]
+syn = "1"
 # TODO
