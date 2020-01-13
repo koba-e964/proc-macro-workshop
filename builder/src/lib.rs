@@ -5,8 +5,8 @@ use quote::quote;
 use std::collections::HashMap;
 use syn::export::Span;
 use syn::{
-    parse_str, AngleBracketedGenericArguments, Data, Fields, GenericArgument, Meta, NestedMeta,
-    Path, PathArguments, PathSegment, TypePath,
+    parse_str, AngleBracketedGenericArguments, Data, Error, Fields, GenericArgument, Meta,
+    NestedMeta, Path, PathArguments, PathSegment, Result, TypePath,
 };
 use syn::{Ident, Lit, Type};
 
@@ -88,27 +88,37 @@ fn path_is_equal_to_str(path: &Path, name: &str) -> bool {
 }
 
 // For each field annotated with `#[builder(each = name)]`, makes an entry (field_name => (name, ty)).
-fn make_each_map(fields: &Fields) -> HashMap<Ident, (Ident, Type)> {
+fn make_each_map(fields: &Fields) -> Result<HashMap<Ident, (Ident, Type)>> {
     let mut map: HashMap<_, (_, Type)> = HashMap::new();
-    fields.iter().for_each(|field| {
+    for field in fields.iter() {
         let ref ident = field.ident.clone().unwrap();
         let ref attrs = field.attrs;
         let mut each_arg = None;
         for attr in attrs {
-            match attr.parse_meta() {
-                Ok(Meta::List(x)) => {
+            let whole_meta = attr.parse_meta()?;
+            let _args: Meta = attr.parse_args()?;
+            match whole_meta {
+                Meta::List(ref x) => {
                     // Check if `x.path` is `builder`.
                     if path_is_equal_to_str(&x.path, "builder") {
                         // Hit
-                        let nested = x.nested;
-                        for meta in nested {
+                        let ref nested = x.nested;
+                        for meta_x in nested {
                             // search for `each`
-                            if let NestedMeta::Meta(Meta::NameValue(meta)) = meta {
-                                if path_is_equal_to_str(&meta.path, "each") {
-                                    // we've found `#[builder(each = ...)]` so far.
-                                    // To complete we must check ... is a string literal.
-                                    if let Lit::Str(s) = meta.lit {
-                                        each_arg = Some(s.value());
+                            if let NestedMeta::Meta(name_value) = meta_x {
+                                if let Meta::NameValue(meta) = name_value {
+                                    if path_is_equal_to_str(&meta.path, "each") {
+                                        // we've found `#[builder(each = ...)]` so far.
+                                        // To complete we must check ... is a string literal.
+                                        if let Lit::Str(ref s) = meta.lit {
+                                            each_arg = Some(s.value());
+                                        }
+                                    } else {
+                                        // Compile error
+                                        return Err(Error::new_spanned(
+                                            whole_meta.clone(),
+                                            "expected `builder(each = \"...\")`",
+                                        ));
                                     }
                                 }
                             }
@@ -126,14 +136,11 @@ fn make_each_map(fields: &Fields) -> HashMap<Ident, (Ident, Type)> {
                 .clone();
             map.insert(ident.clone(), (each_arg_ident, contained_type));
         }
-    });
-    map
+    }
+    Ok(map)
 }
 
-#[proc_macro_derive(Builder, attributes(builder))]
-pub fn derive(input: TokenStream) -> TokenStream {
-    let derive_input = syn::parse_macro_input!(input as syn::DeriveInput);
-
+fn derive_impl(derive_input: syn::DeriveInput) -> Result<TokenStream> {
     let ident = derive_input.ident;
 
     let builder_ident = Ident::new(&format!("{}Builder", ident), Span::call_site());
@@ -147,7 +154,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         _ => panic!("Only structs can have derive(Builder) implementation"),
     };
 
-    let each_map = make_each_map(&orig_fields);
+    let each_map = make_each_map(&orig_fields)?;
 
     // Enumerates all declarations of form `varname: typename` and emits `varname: Option<typename>`.
     // With two exceptions.
@@ -267,5 +274,14 @@ pub fn derive(input: TokenStream) -> TokenStream {
             }
         }
     };
-    build_impl.into()
+    Ok(build_impl.into())
+}
+
+#[proc_macro_derive(Builder, attributes(builder))]
+pub fn derive(input: TokenStream) -> TokenStream {
+    let derive_input = syn::parse_macro_input!(input as syn::DeriveInput);
+    match derive_impl(derive_input) {
+        Ok(output) => output,
+        Err(e) => e.to_compile_error().into(),
+    }
 }
