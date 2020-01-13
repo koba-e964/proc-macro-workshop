@@ -3,8 +3,46 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::export::Span;
-use syn::Data;
+use syn::{
+    AngleBracketedGenericArguments, Data, GenericArgument, Path, PathArguments, PathSegment,
+    TypePath,
+};
 use syn::{Ident, Type};
+
+// Check if ty is of form Option<T> and returns Some(T) if so.
+fn detect_option_type(ty: &Type) -> Option<&Type> {
+    let segments = if let Type::Path(TypePath {
+        qself: None,
+        path: Path { segments, .. },
+    }) = ty
+    {
+        segments
+    } else {
+        return None;
+    };
+    if segments.len() != 1 {
+        return None;
+    }
+    let (option_ident, args) = if let PathSegment {
+        ident: option_ident,
+        arguments: PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }),
+    } = &segments[0]
+    {
+        (option_ident, args)
+    } else {
+        return None;
+    };
+    if option_ident != "Option" {
+        return None;
+    }
+    if args.len() != 1 {
+        return None;
+    }
+    match &args[0] {
+        GenericArgument::Type(ref ty) => Some(ty),
+        _ => None,
+    }
+}
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -26,9 +64,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let mut builder_fields = orig_fields.clone();
     builder_fields.iter_mut().for_each(|field| {
         let ty = field.ty.clone();
-        field.ty = Type::Verbatim(quote! {
-            Option<#ty>
-        })
+        let builder_field_ty = match detect_option_type(&ty) {
+            Some(_) => ty,
+            None => Type::Verbatim(quote! {
+                Option<#ty>
+            }),
+        };
+        field.ty = builder_field_ty;
     });
 
     let builder_field_names: Vec<_> = builder_fields
@@ -47,6 +89,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
             .clone()
             .expect("Only named structs are expected");
         let ty = field.ty.clone();
+        // If ty is Option<_>, unwrap Option once.
+        let ty = match detect_option_type(&ty) {
+            Some(ty) => ty,
+            None => &ty,
+        };
         quote! {
             fn #ident(&mut self, #ident: #ty) -> &mut Self {
                 self.#ident = std::option::Option::Some(#ident);
@@ -55,16 +102,29 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     });
 
+    let build_fields_init: Vec<_> = orig_fields.iter().map(|field| {
+        let ty = field.ty.clone();
+        let field_name = field.ident.clone();
+        match detect_option_type(&ty) {
+            Some(_) => quote! {
+                let #field_name = self.#field_name.take();
+            },
+            None => quote! {
+                let #field_name = match self.#field_name.take() {
+                    ::std::option::Option::Some(value) => value,
+                    ::std::option::Option::None => return ::std::result::Result::Err(stringify!(#field_name).into()),
+                };
+            },
+        }
+    }).collect();
+
     let build_impl = quote! {
         struct #builder_ident
             #builder_fields
         impl #builder_ident {
             #(#builder_member_inits)*
             fn build(&mut self) -> ::std::result::Result<#ident, ::std::boxed::Box<dyn ::std::error::Error>> {
-                #(let #builder_field_names = match self.#builder_field_names.take() {
-                    ::std::option::Option::Some(value) => value,
-                    ::std::option::Option::None => return ::std::result::Result::Err(stringify!(#builder_field_names).into()),
-                };)*
+                #(#build_fields_init)*
                 ::std::result::Result::Ok(#ident {
                     #(#builder_field_names: #builder_field_names,)*
                 })
