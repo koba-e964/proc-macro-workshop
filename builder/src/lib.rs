@@ -16,30 +16,48 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     // This macro doesn't make sense if the input is not `struct`.
     // Enumerates all declarations of form `varname: typename` and emits `varname: Option<typename>`.
-    let builder_members = match derive_input.data {
+    let orig_fields = match derive_input.data {
         Data::Struct(members) => {
-            let mut members = members.clone();
-            members.fields.iter_mut().for_each(|field| {
-                let ty = field.ty.clone();
-                field.ty = Type::Verbatim(quote! {
-                    Option<#ty>
-                })
-            });
+            let members = members.clone();
             members.fields
         }
         _ => panic!("Only structs can have derive(Builder) implementation"),
     };
+    let mut builder_fields = orig_fields.clone();
+    builder_fields.iter_mut().for_each(|field| {
+        let ty = field.ty.clone();
+        field.ty = Type::Verbatim(quote! {
+            Option<#ty>
+        })
+    });
 
-    let builder_field_names = builder_members.iter().map(|field| {
+    let builder_field_names = builder_fields.iter().map(|field| {
         field
             .ident
             .clone()
             .expect("Only named structs are expected")
     });
 
+    let builder_member_inits = orig_fields.iter().map(|field| {
+        let ident = field
+            .ident
+            .clone()
+            .expect("Only named structs are expected");
+        let ty = field.ty.clone();
+        quote! {
+            fn #ident(&mut self, #ident: #ty) -> &mut Self {
+                self.#ident = std::option::Option::Some(#ident);
+                self
+            }
+        }
+    });
+
     let build_impl = quote! {
         struct #builder_ident
-            #builder_members
+            #builder_fields
+        impl #builder_ident {
+            #(#builder_member_inits)*
+        }
         impl #ident {
             fn builder() -> #builder_ident {
                 #builder_ident {
