@@ -31,12 +31,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
         })
     });
 
-    let builder_field_names = builder_fields.iter().map(|field| {
-        field
-            .ident
-            .clone()
-            .expect("Only named structs are expected")
-    });
+    let builder_field_names: Vec<_> = builder_fields
+        .iter()
+        .map(|field| {
+            field
+                .ident
+                .clone()
+                .expect("Only named structs are expected")
+        })
+        .collect();
 
     let builder_member_inits = orig_fields.iter().map(|field| {
         let ident = field
@@ -57,6 +60,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
             #builder_fields
         impl #builder_ident {
             #(#builder_member_inits)*
+            fn build(&mut self) -> ::std::result::Result<#ident, ::std::boxed::Box<dyn ::std::error::Error>> {
+                #(let #builder_field_names = match self.#builder_field_names.take() {
+                    ::std::option::Option::Some(value) => value,
+                    ::std::option::Option::None => return ::std::result::Result::Err(stringify!(#builder_field_names).into()),
+                };)*
+                ::std::result::Result::Ok(#ident {
+                    #(#builder_field_names: #builder_field_names,)*
+                })
+            }
         }
         impl #ident {
             fn builder() -> #builder_ident {
