@@ -165,7 +165,7 @@ fn derive_impl(derive_input: syn::DeriveInput) -> Result<TokenStream> {
             (Some(_), None) => ty,
             (_, Some(_)) => ty,
             (None, None) => Type::Verbatim(quote! {
-                Option<#ty>
+                ::std::option::Option<#ty>
             }),
         };
         quote! {
@@ -223,7 +223,7 @@ fn derive_impl(derive_input: syn::DeriveInput) -> Result<TokenStream> {
         };
         quote! {
             fn #ident(&mut self, #ident: #ty) -> &mut Self {
-                self.#ident = std::option::Option::Some(#ident);
+                self.#ident = ::std::option::Option::Some(#ident);
                 self
             }
         }
